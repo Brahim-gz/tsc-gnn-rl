@@ -1,0 +1,58 @@
+# training/config.yaml
+# ============================================================
+# All hyperparameters in one place.
+# Overrides DEFAULT_CONFIG in interfaces.py when loaded.
+# ============================================================
+
+# ── Environment ──────────────────────────────────────────────
+env:
+  num_intersections: 16        # 4x4 grid
+  episode_seconds:   3600      # 1-hour episode
+  delta_time:        10        # seconds per action step
+  cityflow_threads:  4
+  reward_fn:         queue     # queue | pressure | combined
+
+# ── GNN (Person B owns these) ────────────────────────────────
+gnn:
+  embed_dim:   64
+  gat_heads:   4
+  gat_layers:  2
+  hidden_dim:  128
+  dropout:     0.1
+
+# ── DQN ──────────────────────────────────────────────────────
+dqn:
+  lr:                 0.0003
+  gamma:              0.99
+  batch_size:         64
+  total_steps:        300000
+  warmup_steps:       1000
+  replay_capacity:    50000
+  target_update_freq: 200
+  train_freq:         4
+  epsilon_start:      1.0
+  epsilon_end:        0.05
+  epsilon_decay:      10000
+  save_freq:          5000
+
+# ── PPO ──────────────────────────────────────────────────────
+ppo:
+  lr:              0.0003
+  gamma:           0.99
+  total_steps:     300000
+  rollout_steps:   2048
+  ppo_epochs:      10
+  clip_eps:        0.2
+  vf_coef:         0.5
+  ent_coef:        0.01
+  gae_lambda:      0.95
+  max_grad_norm:   0.5
+  save_freq:       5000
+
+# ── Paths ─────────────────────────────────────────────────────
+paths:
+  data_dir:       data/
+  checkpoint_dir: checkpoints/
+  log_dir:        logs/
+  roadnet:        data/synthetic_4x4/roadnet.json
+  flow:           data/synthetic_4x4/flow.json
