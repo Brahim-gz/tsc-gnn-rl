@@ -1,0 +1,78 @@
+# =============================================================================
+# config.yaml — All hyperparameters for Project 04
+# Edit freely, but sync with teammate before changing shared keys (marked ★)
+# =============================================================================
+
+# ── Environment ★ ─────────────────────────────────────────────────────────────
+env:
+  num_intersections: 16          # 4×4 grid = 16 agents
+  episode_seconds:   3600        # 1 hour per episode
+  delta_time:        10          # seconds per agent action step ★
+  min_green:         10          # minimum green phase duration (seconds)
+  yellow_time:       3           # yellow phase duration (seconds)
+  simulator:         "cityflow"  # "cityflow" or "sumo"
+  num_threads:       4           # CityFlow parallel threads
+
+# ── Paths ─────────────────────────────────────────────────────────────────────
+paths:
+  data_dir:       "data"
+  checkpoint_dir: "checkpoints"
+  log_dir:        "logs"
+  roadnet:        "data/4x4/roadnet.json"
+  flow:           "data/4x4/flow.json"
+
+# ── Shared model dimensions ★ (Person B owns these values) ────────────────────
+model:
+  state_dim:  8      # ★ STATE_DIM — do not change without B
+  embed_dim:  64     # ★ EMBED_DIM — do not change without B
+  num_phases: 4      # ★ NUM_PHASES — do not change without B
+  edge_dim:   2      # ★ EDGE_DIM — do not change without B
+  hidden_dim: 128
+  gat_heads:  4
+  gat_layers: 2
+  dropout:    0.1
+
+# ── DQN training ──────────────────────────────────────────────────────────────
+dqn:
+  total_steps:        300000
+  warmup_steps:       1000
+  batch_size:         64
+  lr:                 0.0003
+  gamma:              0.99
+  epsilon_start:      1.0
+  epsilon_end:        0.05
+  epsilon_decay:      10000
+  target_update_freq: 200
+  buffer_capacity:    50000
+  gradient_clip:      10.0
+  train_freq:         4          # train every N env steps
+
+# ── PPO training ──────────────────────────────────────────────────────────────
+ppo:
+  total_steps:   300000
+  rollout_steps: 2048
+  batch_size:    64
+  lr:            0.0003
+  gamma:         0.99
+  gae_lambda:    0.95
+  ppo_epochs:    4
+  ppo_clip:      0.2
+  entropy_coef:  0.01
+  value_coef:    0.5
+  gradient_clip: 0.5
+  checkpoint_freq: 5000
+
+# ── Logging ───────────────────────────────────────────────────────────────────
+logging:
+  use_wandb:     true
+  project_name:  "project04-traffic-gnn"
+  log_freq:      100            # log every N steps
+
+# ── Reward ────────────────────────────────────────────────────────────────────
+reward:
+  type: "queue"                 # "queue" | "pressure" | "combined"
+  phase_switch_penalty: 2.0     # subtracted when agent switches phase
+  combined_weights:
+    queue:   0.5
+    waiting: 0.3
+    switch:  0.2

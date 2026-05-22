@@ -1,1 +1,32 @@
 .venv
+__pycache__/
+*.py[cod]
+*.pyo
+.env
+*.egg-info/
+dist/
+build/
+
+# Large data files (upload separately to Kaggle)
+data/*/roadnet.json
+data/*/flow.json
+
+# Checkpoints — commit only final ones manually
+checkpoints/step_*.pt
+checkpoints/*_latest.pt
+
+# Results (regenerate from eval.py)
+results/
+
+# Logs
+logs/
+*.log
+wandb/
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb
+
+# OS
+.DS_Store
+Thumbs.db
