@@ -61,14 +61,19 @@ class CityFlowEnv(gym.Env):
         self.eng = self._cityflow.Engine(config_path, thread_num=thread_num)
 
         # Cache intersection IDs (only traffic-light controlled ones)
-        all_ids = self.eng.get_intersection_ids()
-        self.intersection_ids = [i for i in all_ids
-                                  if not self.eng.get_intersection_id(i).is_virtual][:num_intersections]
+        all_ids = list(self.eng.get_intersection_ids())
+        try:
+            self.intersection_ids = [i for i in all_ids
+                                      if not self.eng.get_intersection_id(i).is_virtual][:num_intersections]
+        except AttributeError:
+            self.intersection_ids = self._load_non_virtual_intersections_from_roadnet(
+                config_path
+            )[:num_intersections]
 
-        # If the engine doesn't expose get_intersection_id easily, fall back to all IDs
+        # If the engine doesn't expose metadata, fall back to all IDs
         # (safe fallback — CityFlow API varies slightly by version)
         if len(self.intersection_ids) == 0:
-            self.intersection_ids = list(self.eng.get_intersection_ids())[:num_intersections]
+            self.intersection_ids = all_ids[:num_intersections]
 
         # Gymnasium spaces
         self.observation_space = spaces.Box(
@@ -232,6 +237,26 @@ class CityFlowEnv(gym.Env):
     # ─────────────────────────────────────────────────────────────────────────
     # CityFlow helpers
     # ─────────────────────────────────────────────────────────────────────────
+
+    def _load_non_virtual_intersections_from_roadnet(self, config_path: str) -> list:
+        try:
+            with open(config_path, "r") as f:
+                cfg = json.load(f)
+            roadnet_file = cfg.get("roadnetFile")
+            if not roadnet_file:
+                return []
+            base_dir = cfg.get("dir", "")
+            if base_dir == "":
+                base_dir = os.path.dirname(os.path.abspath(config_path))
+            rn_path = os.path.join(base_dir, roadnet_file)
+            with open(rn_path, "r") as f:
+                rn_data = json.load(f)
+            return [
+                i["id"] for i in rn_data.get("intersections", [])
+                if not i.get("virtual", False)
+            ]
+        except Exception:
+            return []
 
     def _get_approach_lanes(self, iid: str) -> list:
         """Return incoming lane IDs for an intersection (cached)."""
