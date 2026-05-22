@@ -1,7 +1,6 @@
 # evaluation/attention_viz.py
 # ============================================================
 # Visualise Graph Attention Network weights on the road network.
-# Person B's Week 2 Day 11 deliverable.
 #
 # Produces:
 #   - Heatmap: edge thickness/colour = attention weight

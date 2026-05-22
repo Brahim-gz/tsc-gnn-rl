@@ -1,4 +1,4 @@
-# Project 04 — GNN Policy Network for Traffic Signal Control
+#  GNN Policy Network for Traffic Signal Control
 
 > Deep Reinforcement Learning × Graph Representation Learning  
 > Tools: CityFlow · PyTorch Geometric · Stable-Baselines3 · WandB
