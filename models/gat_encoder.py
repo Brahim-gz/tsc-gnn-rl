@@ -1,8 +1,6 @@
 # models/gat_encoder.py
 # ============================================================
 # Core GNN backbone — 2-layer Graph Attention Network (GAT).
-# Person B owns this file entirely.
-#
 # This is the shared encoder used by both the DQN Q-network
 # and the PPO actor-critic. Changing it affects both.
 #
