@@ -1,9 +1,4 @@
 # env/cityflow_wrapper.py
-# ============================================================
-# CityFlow → Gymnasium wrapper.
-# Replaces sumo-rl entirely. No OS-level dependencies.
-# pip install: cityflow (needs cmake)
-# ============================================================
 
 import json
 import os
@@ -11,26 +6,10 @@ import numpy as np
 import gymnasium as gym
 from gymnasium import spaces
 
-from interfaces import STATE_DIM, NUM_PHASES, DEFAULT_CONFIG
+from interfaces import STATE_DIM, NUM_PHASES
 
 
 class CityFlowEnv(gym.Env):
-    """
-    Multi-intersection traffic signal control environment.
-
-    Wraps CityFlow as a single Gymnasium environment where:
-        - Each intersection = one RL agent
-        - All agents share a single policy (parameter sharing)
-        - Observation : Tensor[N, STATE_DIM]  — one row per intersection
-        - Action      : np.ndarray[N]          — phase index per intersection
-
-    Usage
-    -----
-        env = CityFlowEnv(config_path="config.json", num_intersections=16)
-        obs, info = env.reset()
-        obs, reward, done, truncated, info = env.step(actions)
-    """
-
     metadata = {"render_modes": []}
 
     def __init__(
@@ -39,43 +18,29 @@ class CityFlowEnv(gym.Env):
         num_intersections: int  = 16,
         episode_seconds:   int  = 3600,
         delta_time:        int  = 10,
-        reward_fn:         str  = "queue",       # "queue" | "pressure" | "combined"
+        reward_fn:         str  = "queue",
         thread_num:        int  = 4,
         seed:              int  = 0,
     ):
         super().__init__()
 
-        import cityflow  # imported here so the file can be read without cityflow installed
-        self._cityflow = cityflow
+        import cityflow
+        self.eng = cityflow.Engine(config_path, thread_num=thread_num)
 
         self.config_path       = config_path
         self.num_intersections = num_intersections
         self.episode_seconds   = episode_seconds
         self.delta_time        = delta_time
         self.reward_fn_name    = reward_fn
-        self.thread_num        = thread_num
-        self._seed             = seed
         self._step_count       = 0
 
-        # Build the engine
-        self.eng = self._cityflow.Engine(config_path, thread_num=thread_num)
+        # ── Parse intersection IDs from roadnet.json ──────────────────────────
+        # CityFlow Engine has no get_intersection_ids() method.
+        # We read the roadnet file that was passed in the config instead.
+        roadnet_path = self._get_roadnet_path(config_path)
+        self.intersection_ids = self._parse_tl_ids(roadnet_path, num_intersections)
+        print(f"  Found {len(self.intersection_ids)} traffic-light intersections")
 
-        # Cache intersection IDs (only traffic-light controlled ones)
-        all_ids = list(self.eng.get_intersection_ids())
-        try:
-            self.intersection_ids = [i for i in all_ids
-                                      if not self.eng.get_intersection_id(i).is_virtual][:num_intersections]
-        except AttributeError:
-            self.intersection_ids = self._load_non_virtual_intersections_from_roadnet(
-                config_path
-            )[:num_intersections]
-
-        # If the engine doesn't expose metadata, fall back to all IDs
-        # (safe fallback — CityFlow API varies slightly by version)
-        if len(self.intersection_ids) == 0:
-            self.intersection_ids = all_ids[:num_intersections]
-
-        # Gymnasium spaces
         self.observation_space = spaces.Box(
             low=0.0, high=1.0,
             shape=(num_intersections, STATE_DIM),
@@ -85,12 +50,39 @@ class CityFlowEnv(gym.Env):
             [NUM_PHASES] * num_intersections
         )
 
-        # Cache lane lists per intersection (set on first reset)
-        self._lane_cache: dict = {}
+        self._phase_timers = {iid: 0 for iid in self.intersection_ids}
+        self._last_phases  = {iid: 0 for iid in self.intersection_ids}
+        self._lane_cache   = {}
 
-    # ─────────────────────────────────────────────────────────────────────────
-    # Gymnasium API
-    # ─────────────────────────────────────────────────────────────────────────
+    # ── Helpers to read roadnet path from config ───────────────────────────────
+
+    def _get_roadnet_path(self, config_path: str) -> str:
+        """Read the roadnetFile path out of the CityFlow config JSON."""
+        with open(config_path) as f:
+            cfg = json.load(f)
+        roadnet = cfg.get("roadnetFile", "")
+        # Path may be absolute or relative to the config file's directory
+        if not os.path.isabs(roadnet):
+            roadnet = os.path.join(os.path.dirname(config_path), roadnet)
+        return roadnet
+
+    def _parse_tl_ids(self, roadnet_path: str, limit: int) -> list:
+        """
+        Parse traffic-light intersection IDs from roadnet.json.
+        Returns at most `limit` IDs.
+        """
+        with open(roadnet_path) as f:
+            rn = json.load(f)
+        ids = [
+            inter["id"]
+            for inter in rn.get("intersections", [])
+            if not inter.get("virtual", False)
+        ]
+        if len(ids) == 0:
+            raise ValueError(f"No non-virtual intersections found in {roadnet_path}")
+        return ids[:limit]
+
+    # ── Gymnasium API ──────────────────────────────────────────────────────────
 
     def reset(self, seed=None, options=None):
         super().reset(seed=seed)
@@ -98,30 +90,22 @@ class CityFlowEnv(gym.Env):
         self._step_count   = 0
         self._phase_timers = {iid: 0 for iid in self.intersection_ids}
         self._last_phases  = {iid: 0 for iid in self.intersection_ids}
-        obs = self._get_observation()
-        return obs, {}
+        self._lane_cache   = {}
+        return self._get_observation(), {}
 
     def step(self, actions: np.ndarray):
-        """
-        Apply phase actions for all intersections, advance the simulator
-        by delta_time seconds, return (obs, reward, done, truncated, info).
-        """
-        assert len(actions) == self.num_intersections, \
-            f"Expected {self.num_intersections} actions, got {len(actions)}"
+        assert len(actions) == self.num_intersections
 
-        # Set phase for each intersection
         for i, iid in enumerate(self.intersection_ids):
-            phase = int(actions[i]) % self._get_num_phases(iid)
+            phase = int(actions[i]) % NUM_PHASES
             self.eng.set_tl_phase(iid, phase)
 
-            # Update phase timer
             if phase != self._last_phases[iid]:
                 self._phase_timers[iid] = 0
                 self._last_phases[iid]  = phase
             else:
                 self._phase_timers[iid] += self.delta_time
 
-        # Advance simulator
         for _ in range(self.delta_time):
             self.eng.next_step()
         self._step_count += self.delta_time
@@ -131,15 +115,13 @@ class CityFlowEnv(gym.Env):
         done   = self._step_count >= self.episode_seconds
 
         info = {
-            "step":          self._step_count,
-            "avg_queue":     float(np.mean([self._get_queue(iid)
-                                            for iid in self.intersection_ids])),
+            "step":           self._step_count,
+            "avg_queue":      self._avg_queue(),
             "total_vehicles": self.eng.get_vehicle_count(),
         }
         return obs, reward, done, False, info
 
-    def render(self):
-        pass  # CityFlow has a web-based replay — no inline rendering needed
+    def render(self): pass
 
     def close(self):
         try:
@@ -147,48 +129,40 @@ class CityFlowEnv(gym.Env):
         except Exception:
             pass
 
-    # ─────────────────────────────────────────────────────────────────────────
-    # Observation builder
-    # ─────────────────────────────────────────────────────────────────────────
+    # ── Observation ────────────────────────────────────────────────────────────
 
     def _get_observation(self) -> np.ndarray:
         """
-        Returns np.ndarray[N, STATE_DIM] where STATE_DIM = 8:
-            [queue_0, queue_1, queue_2, queue_3,   ← 4 normalized queue lengths
-             phase_oh_0, phase_oh_1, phase_oh_2,   ← 3-bit one-hot current phase
-             elapsed_norm]                          ← time since last switch / 60
+        Returns np.ndarray[N, STATE_DIM=8]:
+            [queue_0..3 (normalized), phase_oh_0..2, elapsed_norm]
         """
-        lane_counts = self.eng.get_lane_vehicle_count()
+        # get_lane_waiting_vehicle_count() returns waiting vehicles per lane
+        # (more meaningful than total count for queue estimation)
+        try:
+            lane_counts = self.eng.get_lane_waiting_vehicle_count()
+        except AttributeError:
+            lane_counts = self.eng.get_lane_vehicle_count()
+
         states = []
-
         for iid in self.intersection_ids:
-            lanes    = self._get_approach_lanes(iid)
-            capacity = max(self._get_lane_capacity(iid), 1)
+            lanes    = self._get_approach_lanes(iid, lane_counts)
+            capacity = 20.0
 
-            # Queue per approach lane (normalized, padded/trimmed to 4)
-            queues = [lane_counts.get(l, 0) / capacity for l in lanes[:4]]
-            queues += [0.0] * (4 - len(queues))
+            queues   = [lane_counts.get(l, 0) / capacity for l in lanes[:4]]
+            queues  += [0.0] * (4 - len(queues))
 
-            # Phase one-hot (3 bits — groups 4 phases into 3 for compactness)
             phase    = self._last_phases.get(iid, 0) % 3
             phase_oh = [float(phase == k) for k in range(3)]
 
-            # Elapsed time since last phase change (normalized to 60 s)
-            elapsed = min(self._phase_timers.get(iid, 0), 60) / 60.0
+            elapsed  = min(self._phase_timers.get(iid, 0), 60) / 60.0
 
             states.append(queues + phase_oh + [elapsed])
 
         return np.array(states, dtype=np.float32)
 
-    # ─────────────────────────────────────────────────────────────────────────
-    # Reward functions
-    # ─────────────────────────────────────────────────────────────────────────
+    # ── Reward ─────────────────────────────────────────────────────────────────
 
-    def _compute_reward(self, actions: np.ndarray) -> float:
-        """
-        Dispatch to the selected reward function.
-        All return a scalar float (negative = penalty).
-        """
+    def _compute_reward(self, actions) -> float:
         if self.reward_fn_name == "queue":
             return self._reward_queue()
         elif self.reward_fn_name == "pressure":
@@ -196,122 +170,88 @@ class CityFlowEnv(gym.Env):
         elif self.reward_fn_name == "combined":
             return self._reward_combined(actions)
         else:
-            raise ValueError(f"Unknown reward function: {self.reward_fn_name}")
+            raise ValueError(f"Unknown reward: {self.reward_fn_name}")
 
     def _reward_queue(self) -> float:
-        """Negative sum of all waiting vehicles across all intersections."""
-        lane_counts = self.eng.get_lane_vehicle_count()
-        total = sum(lane_counts.values())
-        return -total / max(self.num_intersections, 1)
+        try:
+            counts = self.eng.get_lane_waiting_vehicle_count()
+        except AttributeError:
+            counts = self.eng.get_lane_vehicle_count()
+        return -sum(counts.values()) / max(self.num_intersections, 1)
 
     def _reward_pressure(self) -> float:
-        """
-        PressLight-style pressure reward.
-        Pressure = |incoming_vehicles - outgoing_vehicles| per intersection.
-        Lower pressure = better flow balance.
-        """
-        lane_counts = self.eng.get_lane_vehicle_count()
-        total_pressure = 0.0
+        try:
+            counts = self.eng.get_lane_waiting_vehicle_count()
+        except AttributeError:
+            counts = self.eng.get_lane_vehicle_count()
+        total = 0.0
         for iid in self.intersection_ids:
-            in_lanes  = self._get_approach_lanes(iid)
-            out_lanes = self._get_exit_lanes(iid)
-            incoming  = sum(lane_counts.get(l, 0) for l in in_lanes)
-            outgoing  = sum(lane_counts.get(l, 0) for l in out_lanes)
-            total_pressure += abs(incoming - outgoing)
-        return -total_pressure / max(self.num_intersections, 1)
+            in_lanes  = self._get_approach_lanes(iid, counts)
+            out_lanes = self._get_exit_lanes(iid, counts)
+            total    += abs(
+                sum(counts.get(l, 0) for l in in_lanes) -
+                sum(counts.get(l, 0) for l in out_lanes)
+            )
+        return -total / max(self.num_intersections, 1)
 
-    def _reward_combined(self, actions: np.ndarray) -> float:
-        """
-        Weighted combination:
-            0.5 * queue  +  0.3 * waiting_time  +  0.2 * phase_switch_penalty
-        """
-        queue_r   = self._reward_queue()
-        waiting_r = -self.eng.get_average_travel_time() / 300.0  # normalize to ~300s
-        switch_r  = -sum(
+    def _reward_combined(self, actions) -> float:
+        q = self._reward_queue()
+        w = -self.eng.get_average_travel_time() / 300.0
+        s = -sum(
             1.0 for i, iid in enumerate(self.intersection_ids)
             if int(actions[i]) != self._last_phases.get(iid, 0)
         ) / max(self.num_intersections, 1)
+        return 0.5 * q + 0.3 * w + 0.2 * s
 
-        return 0.5 * queue_r + 0.3 * waiting_r + 0.2 * switch_r
+    # ── Lane helpers ───────────────────────────────────────────────────────────
 
-    # ─────────────────────────────────────────────────────────────────────────
-    # CityFlow helpers
-    # ─────────────────────────────────────────────────────────────────────────
-
-    def _load_non_virtual_intersections_from_roadnet(self, config_path: str) -> list:
-        try:
-            with open(config_path, "r") as f:
-                cfg = json.load(f)
-            roadnet_file = cfg.get("roadnetFile")
-            if not roadnet_file:
-                return []
-            base_dir = cfg.get("dir", "")
-            if base_dir == "":
-                base_dir = os.path.dirname(os.path.abspath(config_path))
-            rn_path = os.path.join(base_dir, roadnet_file)
-            with open(rn_path, "r") as f:
-                rn_data = json.load(f)
-            return [
-                i["id"] for i in rn_data.get("intersections", [])
-                if not i.get("virtual", False)
-            ]
-        except Exception:
-            return []
-
-    def _get_approach_lanes(self, iid: str) -> list:
-        """Return incoming lane IDs for an intersection (cached)."""
+    def _get_approach_lanes(self, iid: str, lane_counts: dict) -> list:
         if iid not in self._lane_cache:
-            self._lane_cache[iid] = self._build_lane_cache(iid)
+            self._build_lane_cache(iid, lane_counts)
         return self._lane_cache[iid]["in"]
 
-    def _get_exit_lanes(self, iid: str) -> list:
+    def _get_exit_lanes(self, iid: str, lane_counts: dict) -> list:
         if iid not in self._lane_cache:
-            self._lane_cache[iid] = self._build_lane_cache(iid)
+            self._build_lane_cache(iid, lane_counts)
         return self._lane_cache[iid]["out"]
 
-    def _build_lane_cache(self, iid: str) -> dict:
+    def _build_lane_cache(self, iid: str, lane_counts: dict):
         """
-        Parse lane IDs from CityFlow's lane naming convention.
-        Incoming lanes: road ends at this intersection → contain iid in name.
-        This is a heuristic; adjust if your roadnet uses different naming.
+        CityFlow lane naming convention from generate_grid_scenario.py:
+            road_{startIntersection}_{endIntersection}_{lane_index}
+        Incoming lanes end at iid → road_*_{iid}_*
+        Outgoing lanes start at iid → road_{iid}_*_*
         """
-        all_lanes = list(self.eng.get_lane_vehicle_count().keys())
-        in_lanes  = [l for l in all_lanes if f"_{iid}_" in l or l.endswith(f"_{iid}")]
-        out_lanes = [l for l in all_lanes if l.startswith(f"{iid}_")]
-        return {"in": in_lanes[:8], "out": out_lanes[:8]}
+        all_lanes = list(lane_counts.keys())
+        in_lanes  = [l for l in all_lanes if f"_{iid}_" in l]
+        out_lanes = [l for l in all_lanes if l.startswith(f"road_{iid}_")]
 
-    def _get_queue(self, iid: str) -> float:
-        """Total waiting vehicles at an intersection (for logging)."""
-        lane_counts = self.eng.get_lane_vehicle_count()
-        lanes = self._get_approach_lanes(iid)
-        return sum(lane_counts.get(l, 0) for l in lanes)
+        # Fallback: if naming convention doesn't match, grab any lanes mentioning iid
+        if not in_lanes and not out_lanes:
+            in_lanes  = [l for l in all_lanes if iid in l][:8]
+            out_lanes = []
 
-    def _get_num_phases(self, iid: str) -> int:
-        """Number of valid phases at an intersection (default 4)."""
-        return NUM_PHASES
+        self._lane_cache[iid] = {"in": in_lanes[:8], "out": out_lanes[:8]}
 
-    def _get_lane_capacity(self, iid: str) -> int:
-        """Approximate lane capacity (vehicles). Heuristic: 20 vehicles."""
-        return 20
+    def _avg_queue(self) -> float:
+        try:
+            counts = self.eng.get_lane_waiting_vehicle_count()
+        except AttributeError:
+            counts = self.eng.get_lane_vehicle_count()
+        return sum(counts.values()) / max(len(counts), 1)
 
-    # ─────────────────────────────────────────────────────────────────────────
-    # Utility
-    # ─────────────────────────────────────────────────────────────────────────
+    # ── Utility ────────────────────────────────────────────────────────────────
 
     @property
     def avg_travel_time(self) -> float:
-        """CityFlow's built-in average travel time metric."""
         return self.eng.get_average_travel_time()
 
     def get_obs_dict(self) -> dict:
-        """Return {agent_id: state_vector} dict (used by graph_builder)."""
-        obs_matrix = self._get_observation()
-        return {iid: obs_matrix[i] for i, iid in enumerate(self.intersection_ids)}
+        obs = self._get_observation()
+        return {iid: obs[i] for i, iid in enumerate(self.intersection_ids)}
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Config file builder
-# ─────────────────────────────────────────────────────────────────────────────
+# ── Config builder ─────────────────────────────────────────────────────────────
 
 def make_cityflow_config(
     roadnet_path: str,
@@ -320,37 +260,20 @@ def make_cityflow_config(
     seed:         int  = 0,
     save_replay:  bool = False,
 ) -> str:
-    """
-    Build a CityFlow engine config JSON and write it to save_dir/config.json.
-    Returns the path to the config file.
-
-    Parameters
-    ----------
-    roadnet_path : path to roadnet.json (absolute or relative to save_dir)
-    flow_path    : path to flow.json
-    save_dir     : directory where config.json will be written
-    seed         : random seed for reproducibility
-    save_replay  : whether to save a replay log (for visualization)
-    """
     os.makedirs(save_dir, exist_ok=True)
     config_path = os.path.join(save_dir, "config.json")
-
-    replay_path = os.path.join(save_dir, "replay.txt") if save_replay else ""
-
     config = {
-        "interval":          1.0,
-        "seed":              seed,
-        "dir":               "",
-        "roadnetFile":       os.path.abspath(roadnet_path),
-        "flowFile":          os.path.abspath(flow_path),
-        "rlTrafficLight":    True,
-        "laneChange":        False,
-        "saveReplay":        save_replay,
-        "roadnetLogFile":    replay_path,
-        "replayLogFile":     replay_path,
+        "interval":       1.0,
+        "seed":           seed,
+        "dir":            "",
+        "roadnetFile":    os.path.abspath(roadnet_path),
+        "flowFile":       os.path.abspath(flow_path),
+        "rlTrafficLight": True,
+        "laneChange":     False,
+        "saveReplay":     save_replay,
+        "roadnetLogFile": "",
+        "replayLogFile":  "",
     }
-
     with open(config_path, "w") as f:
         json.dump(config, f, indent=2)
-
     return config_path
