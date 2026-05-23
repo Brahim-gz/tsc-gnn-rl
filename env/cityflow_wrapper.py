@@ -36,11 +36,11 @@ class CityFlowEnv(gym.Env):
     def __init__(
         self,
         config_path:       str,
-        num_intersections: int  = DEFAULT_CONFIG["num_intersections"],
-        episode_seconds:   int  = DEFAULT_CONFIG["episode_seconds"],
-        delta_time:        int  = DEFAULT_CONFIG["delta_time"],
+        num_intersections: int  = 16,
+        episode_seconds:   int  = 3600,
+        delta_time:        int  = 10,
         reward_fn:         str  = "queue",       # "queue" | "pressure" | "combined"
-        thread_num:        int  = DEFAULT_CONFIG["cityflow_threads"],
+        thread_num:        int  = 4,
         seed:              int  = 0,
     ):
         super().__init__()
