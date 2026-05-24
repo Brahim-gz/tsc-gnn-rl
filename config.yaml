@@ -23,7 +23,7 @@ paths:
 
 # ── Shared model dimensions ★ (Person B owns these values) ────────────────────
 model:
-  state_dim:  8      # ★ STATE_DIM — do not change without B
+  state_dim:  9      # ★ STATE_DIM — do not change without B
   embed_dim:  64     # ★ EMBED_DIM — do not change without B
   num_phases: 4      # ★ NUM_PHASES — do not change without B
   edge_dim:   2      # ★ EDGE_DIM — do not change without B

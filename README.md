@@ -127,7 +127,7 @@ sys.path.insert(0, PROJECT_DIR)
 
 ```python
 # interfaces.py — never change alone
-STATE_DIM  = 8     # [queue×4, phase_oh×3, elapsed×1]
+STATE_DIM  = 9     # [queue×4, phase_oh×3, elapsed×1]
 EMBED_DIM  = 64    # GATEncoder output per node
 NUM_PHASES = 4     # action space
 EDGE_DIM   = 2     # [road_length_norm, num_lanes_norm]

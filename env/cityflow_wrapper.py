@@ -1,5 +1,6 @@
 # env/cityflow_wrapper.py
 
+from cmath import phase
 import json
 import os
 import numpy as np
@@ -7,6 +8,8 @@ import gymnasium as gym
 from gymnasium import spaces
 
 from interfaces import STATE_DIM, NUM_PHASES
+
+GREEN_PHASES = [0, 2, 4, 6]
 
 
 class CityFlowEnv(gym.Env):
@@ -97,12 +100,13 @@ class CityFlowEnv(gym.Env):
         assert len(actions) == self.num_intersections
 
         for i, iid in enumerate(self.intersection_ids):
-            phase = int(actions[i]) % NUM_PHASES
+            action = int(actions[i]) % NUM_PHASES
+            phase  = GREEN_PHASES[action]          # 0→0, 1→2, 2→4, 3→6
             self.eng.set_tl_phase(iid, phase)
 
-            if phase != self._last_phases[iid]:
+            if action != self._last_phases[iid]:
                 self._phase_timers[iid] = 0
-                self._last_phases[iid]  = phase
+                self._last_phases[iid]  = action
             else:
                 self._phase_timers[iid] += self.delta_time
 
@@ -151,8 +155,8 @@ class CityFlowEnv(gym.Env):
             queues   = [lane_counts.get(l, 0) / capacity for l in lanes[:4]]
             queues  += [0.0] * (4 - len(queues))
 
-            phase    = self._last_phases.get(iid, 0) % 3
-            phase_oh = [float(phase == k) for k in range(3)]
+            phase    = self._last_phases.get(iid, 0)   # already 0-3 (action index)
+            phase_oh = [float(phase == k) for k in range(NUM_PHASES)]
 
             elapsed  = min(self._phase_timers.get(iid, 0), 60) / 60.0
 
