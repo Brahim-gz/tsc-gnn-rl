@@ -260,20 +260,37 @@ def make_cityflow_config(
     seed:         int  = 0,
     save_replay:  bool = False,
 ) -> str:
+    """
+    Build a CityFlow engine config JSON.
+
+    Key fix: CityFlow resolves ALL file paths relative to the `dir` field.
+    We set `dir` to save_dir and use only filenames (not absolute paths)
+    for roadnetFile, flowFile, and the replay log files.
+    """
     os.makedirs(save_dir, exist_ok=True)
     config_path = os.path.join(save_dir, "config.json")
+
+    # CityFlow needs dir to end with a slash
+    abs_save_dir = os.path.abspath(save_dir).rstrip("/") + "/"
+
+    # Replay log filenames — simple names, resolved relative to dir
+    roadnet_log = "replay_roadnet.json" if save_replay else ""
+    replay_log  = "replay.txt"          if save_replay else ""
+
     config = {
         "interval":       1.0,
         "seed":           seed,
-        "dir":            "",
-        "roadnetFile":    os.path.abspath(roadnet_path),
-        "flowFile":       os.path.abspath(flow_path),
+        "dir":            abs_save_dir,          # ← base for ALL paths
+        "roadnetFile":    os.path.abspath(roadnet_path),  # absolute → safe
+        "flowFile":       os.path.abspath(flow_path),     # absolute → safe
         "rlTrafficLight": True,
         "laneChange":     False,
         "saveReplay":     save_replay,
-        "roadnetLogFile": "",
-        "replayLogFile":  "",
+        "roadnetLogFile": roadnet_log,           # relative to dir
+        "replayLogFile":  replay_log,            # relative to dir
     }
+
     with open(config_path, "w") as f:
         json.dump(config, f, indent=2)
+
     return config_path
